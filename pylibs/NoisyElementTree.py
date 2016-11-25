@@ -1,14 +1,20 @@
-#!/bin/python
 
 """
 Classes for parsing of XML with comments based on stanrd libraries of python.
-"""
 
-#TODO: complete docs
+You can use it for easier walk through XML files with namespaces, get info
+about namespace of current Element (and do not need parse it from tag).
+In addition, it processes and keeps Comments before root node in case that
+some ***** doesn't know XML standard and put this ******* into the file.
+And of course, prints original XML with comments too. However, it will not
+be pretty formated.
+
+Incompatible with ET version <= 1.2.6. Use at least version 1.3.0
+"""
 
 import re
 import xml.etree.ElementTree as ET
-from xml.etree.ElementTree import _namespaces, _encode, _serialize
+from   xml.etree.ElementTree import _namespaces, _encode, _serialize
 
 class NSElement(ET.Element):
     def __init__(self, tag, attrib={}, **extra):
@@ -154,7 +160,7 @@ class NoisyElementTree(ET.ElementTree):
             write("<!--%s-->\n" % _encode(ugly_comment.text, encoding))
         # !!! end of ugly part
         if method == "text":
-            _serialize_text(write, self._root, encoding)
+            _serialize[method](write, self._root, encoding)
         else:
             qnames, namespaces = _namespaces(
                 self._root, encoding, default_namespace
