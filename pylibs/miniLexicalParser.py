@@ -12,10 +12,47 @@ from real parsing.
 ###########################################################
 ### functions that helps with pseudo parsing of config file
 ###########################################################
-def get_index_of_closing_char(istr):
+def get_end_of_comment(istr, index=0):
+    """
+    Returns index where the comment ends.
+
+    :param istr: input string
+    :param index: begin search from the index - from the start by default
+
+    Support usual comments till the end of line (//, #) and block comment
+    like (/* comment */). In case that index is outside of the string or end
+    of the comment is not found, return -1.
+    """
+    isBlockComment = False
+    length = len(istr)
+
+    if index > length or index < 0:
+        return -1
+
+    if istr[index] == "#" or istr[index:].startswith("//"):
+        return istr.find("\n", index)
+
+    if index+2 < length and istr[index:index+2] == "/*":
+        return istr.find("/*", index+2)
+
+    return -1
+
+
+def find_closing_char(istr, index=0):
+    """
+    Returns index of equivalent closing character.
+
+    :param istr: input string
+
+    It's similar to the "find" method that returns index of the first character
+    of the searched character or -1. But in this function the corresponding
+    closing character is looked up, ignoring characters inside strings
+    and comments. E.g. for
+        "(hello (world) /* ) */ ), he would say"
+    index of the third ")" is returned.
+    """
     isCommented = False
     isBlockComment = False
-    index = 1
     important_chars = {
         "{" : "}",
         "(" : ")",
@@ -29,11 +66,15 @@ def get_index_of_closing_char(istr):
     if length < 2:
         return -1
 
-    closing_char = important_chars.get(istr[0], None)
+    if index > length or index < 0:
+        return -1
+
+    closing_char = important_chars.get(istr[index], None)
     if closing_char is None:
         return -1
 
-    isString = istr[0] in "\"'"
+    isString = istr[index] in "\"'"
+    index += 1
     curr_c = ""
     while index < length:
         curr_c = istr[index]
@@ -57,7 +98,7 @@ def get_index_of_closing_char(istr):
                 elif istr[index + 1] == "/":
                     index += 1
         elif not isString and curr_c in opening_char:
-            deep_close = get_index_of_closing_char(istr[index:])
+            deep_close = find_closing_char(istr[index:])
             if deep_close == -1:
                 break
             index += deep_close
@@ -68,6 +109,13 @@ def get_index_of_closing_char(istr):
     return -1
 
 def remove_comments(istr):
+    """
+    Removes all comments from the given string.
+
+    :param istr: input string
+    :return: return
+    """
+
     isCommented = False
     isBlockComment = False
     str_open = "\"'"
@@ -104,7 +152,9 @@ def remove_comments(istr):
         if istr[index] in str_open:
             end_str = get_index_of_closing_char(istr[index:])
             if end_str == -1:
-                return None
+                # instead of error, rather return original content;
+                # but it seems that config file is not correct
+                return istr
             ostr += istr[index:index+end_str+1]
             index += end_str + 1
             continue
@@ -113,3 +163,15 @@ def remove_comments(istr):
 
     return ostr
 
+def find_section(istr, section):
+    """
+    Return index of the section or -1.
+
+    :param istr: input string
+    :param section: name of the searched section, e.g. "options"
+    """
+
+    index = 0
+    length = len(istr)
+
+#######################################################
