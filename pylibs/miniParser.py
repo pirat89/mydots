@@ -51,12 +51,13 @@ def find_end_of_comment(istr, index=0):
 def is_opening_char(c):
      return c in "\"'{(["
 
-def find_next_token(istr,index=0):
+def find_next_token(istr,index=0, end_index=-1):
     """
     Return index of another interesting token or -1 when there is not next.
 
     :param istr: input string
     :param index: begin search from the index; from the start by default
+    :param end_index: stop searching at the end_index or end of the string
 
     In case that initial index contains already some token, skip to another.
     But when searching starts on whitespace or beginning of the comment,
@@ -88,7 +89,11 @@ def find_next_token(istr,index=0):
          that you skip really to the next one.
     """
     length = len(istr)
-    if index >= length or index < 0:
+
+    if length < end_index or end_index < 0:
+        end_index = length
+
+    if index >= end_index or index < 0:
         return -1
 
     #skip to the end of the current token
@@ -105,7 +110,7 @@ def find_next_token(istr,index=0):
     elif istr[index] not in "\n\t ;})]":
         # so we have to skip to the end of the current token
         index += 1
-        while index < length:
+        while index < end_index:
             if (istr[index] in "\n\t ;})]"
                     or is_comment_start(istr, index)
                     or is_opening_char(istr[index])):
@@ -115,7 +120,7 @@ def find_next_token(istr,index=0):
         index += 1
 
     # find next token (can be already under the current index)
-    while index < length:
+    while index < end_index:
         if is_comment_start(istr, index):
             index = find_end_of_comment(istr, index)
             if index == -1:
@@ -217,36 +222,43 @@ def remove_comments(istr):
 
     return ostr
 
-def find_key(istr, key, index=0):
+def find_key(istr, key, index=0, end_index=-1):
     """
     Return index of the key or -1.
 
     :param istr: input string; it could be whole file or content of a section
-    :param index: start searching from the index
     :param key: name of the searched key in the current scope
+    :param index: start searching from the index
+    :param end_index: stop searching at the end_index or end of the string
 
     Funtion is not recursive. Searched key has to be in the current scope.
     Attention:
 
-     In case that input string contains data outside of section by
-    mistake, the closing character is ignored and the key outside of scope
-    could be found. Example of such wrong input could be:
+    In case that input string contains data outside of section by mistake,
+    the closing character is ignored and the key outside of scope could be
+    found. Example of such wrong input could be:
           key1 "val"
           key2 { key-ignored "val-ignored" };
         };
         controls { ... };
-    In this case, the key "controls" is outside of original scope.
+    In this case, the key "controls" is outside of original scope. But for this
+    cases you can set end_index to value, where searching should end. In case
+    you set end_index higher then length of the string, end_index will be
+    automatically corrected to the end of the input string.
     """
     length = len(istr)
     keylen = len(key)
     notFirstKey = False
 
-    if index >= length or index < 0:
+    if length < end_index or end_index < 0:
+        end_index = length
+
+    if index >= end_index or index < 0:
         return -1
 
     while index != -1:
         if istr.startswith(key, index):
-            if index+keylen < length and istr[index+keylen] in "\n\t {;":
+            if index+keylen < end_index and istr[index+keylen] in "\n\t {;":
                 # key has been found
                 return index
 
