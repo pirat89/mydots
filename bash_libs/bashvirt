@@ -1,0 +1,248 @@
+#!/usr/bin/bash
+
+##############################################################################
+# FUNCTIONS FOR VIRTUAL MACHINES
+##############################################################################
+
+# TODO: install VM function
+# virt-install --name rhel7 --ram 1024 --disk ~/vmdisk/rhel7,size=10 \
+#   --location http://download-ipv4.eng.brq.redhat.com/released/RHEL-7/7.4/Server/x86_64/os/ \
+#   --nographics --os-variant=rhel7 --extra-args \"console=ttyS0\"
+
+virt_check() {
+  #
+  # Check whether virtual machine with domain name $1 exists.
+  # Return 0 when exists
+  #        1 otherwise + print msg on stderr
+  #
+  [ -z "$1" ] && {
+    echo >&2 "Error: Missing domain name."
+    return 1
+  }
+
+  virsh list --all --name | grep -q "$1" && return 0
+
+  echo >&2 "Error: The '$1' domain name does not exist."
+  return 1
+}
+
+virt_get_mac() {
+  # Print MAC addr of virtual machine with domain name $1
+  virt_check "$1" || return 1
+  virsh dumpxml "$1"  \
+    | grep "mac addr" \
+    | sed -r "s/^[^']+'([^']+).*$/\1/"
+}
+
+virt_get_ip() {
+  #
+  # Print IP addr of virtual machine with domain name $1
+  #
+  virt_check "$1" || return 1
+  virsh domifaddr "$1" | tail -n +3 \
+    | rev | cut -d " " -f 1 | rev \
+    | head -n1 | grep -Eo "^[^/]+"
+}
+
+virt_ssh() {
+  virt_check "$1" || {
+    echo -e >&2 "USAGE:\n    virt_ssh <domain_name>"
+    return 1
+  }
+
+  v_ip=$(virt_get_ip "$1")
+  [ -z "$v_ip" ] && {
+    echo  >&2 "Error: IP doesn't found"
+    return 1
+  }
+
+  local active=0
+  echo -n >&2 "Try to connect: "
+  for i in {0..20}; do
+    # test whether machine is already accessible
+    ssh -A "root@$v_ip" 'echo Ahoj' >/dev/null 2>&1 && { active=1; break; }
+    echo -n >&2 "."
+    sleep 2
+  done
+  [ $active -eq 0 ] && {
+    echo >&2 "Failed"
+    echo >&2 "Error: Cannot connect to the machine."
+    return 1
+  }
+
+  echo >&2 " Done. Connecting.."
+  ssh -A "root@$v_ip"
+}
+
+virt_down() {
+  #
+  # Download the $2 file from the $1 virtual machine to the $3 path
+  #
+  [ $# -ne 3 ] && {
+    echo -e >&2 "USAGE:\n    virt_down <domain_name> <src_path> <to_path>"
+    return 1
+  }
+
+  virt_check "$1" || return 1
+
+  [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] && {
+    echo >&2 "Error: empty params."
+    return 1
+  }
+
+  v_ip=$(virt_get_ip "$1")
+  [ -z "$v_ip" ] && {
+    echo >&2 "Error: cannot get IP addres of the '$1' machine. Maybe bridge is used?"
+    return 1
+  }
+
+  scp "root@$v_ip":"$2" "$3" || {
+    echo >&2 "Error: transmission failed"
+    return 1
+  }
+}
+
+virt_switch2nat() {
+  [ $# -ne 1 ] && {
+    echo -e >&2 "USAGE:\n    virt_switch2nat <domain_name>"
+    return 1
+  }
+
+  virt_check "$1" || return 1
+  curr_if=$(virsh domiflist "$1" | tail -n+3 | head -n1 | awk '{print $2}')
+  [ "$curr_if" == "network" ] && {
+    echo >&2 "Info: already using the network (NAT)"
+    return 0
+  }
+
+  virsh attach-interface "$1" network default --config || return 1
+
+  [ -z "$curr_if" ] && return 0
+  virsh detach-interface "$1" "$curr_if" || return 1
+
+}
+
+virt_copy_id() {
+  #
+  # Copy ssh key to specified virt machine.
+  #
+  [ $# -ne 1 ] && {
+    echo -e >&2 "USAGE:\n    virt_copy_id <domain_name>"
+    return 1
+  }
+
+  virt_check "$1" || return 1
+  v_ip=$(virt_get_ip "$1")
+  [ -z "$v_ip" ] && {
+    echo >&2 "Error: cannot get IP addres of the '$1' machine. Maybe bridge is used?"
+    return 1
+  }
+  ssh-copy-id "root@$v_ip"
+}
+
+virt_up() {
+  #
+  # Upload the $2 file to the $1 virtual machine to the $3 path
+  #
+  [ $# -ne 3 ] && {
+    echo -e >&2 "USAGE:\n    virt_up <domain_name> <src_path> <to_path>"
+    return 1
+  }
+
+  virt_check "$1" || return 1
+
+  [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] && {
+    echo >&2 "Error: empty params."
+    return 1
+  }
+
+  v_ip=$(virt_get_ip "$1")
+  [ -z "$v_ip" ] && {
+    echo >&2 "Error: cannot get IP addres of the '$1' machine. Maybe bridge is used?"
+    return 1
+  }
+
+  scp "$2" "root@$v_ip":"$3" || {
+    echo >&2 "Error: transmission failed"
+    return 1
+  }
+}
+
+virt_snap() {
+  #
+  # Create the new snapshot of the $1 virtual machine.
+  #
+  if [ $# -ne 2 ]; then
+    echo -e >&2 "USAGE:\n    virt_snap <VIRT_NAME> <SNAPSHOT_NAME>\n"
+    return 1
+  fi
+
+  virt_check "$1" || return 1
+  virsh snapshot-list "$1" | grep -q "[[:space:]]$2[[:space:]]"
+  if [ $? -eq 0 ]; then
+    echo >&2 "Error: snapshot already exists."
+    return 1
+  fi
+  virsh snapshot-create-as "$1" "$2"
+
+}
+
+virt_snap_update() {
+  #
+  # "shift" the last snapshot of virtual machine to the current state
+  # When the "-s" is used as $2 parameter, the machine will be automatically
+  # started.
+  #
+  if [ $# -eq 0 ]; then
+    echo -e >&2 "Usage:\n    virt_snap_update <VIRT_NAME>"
+    return 1
+  fi
+  virt_check "$1" || return 1
+
+  local snap
+
+  virsh domstate "$1" || return 1
+  virsh domstate "$1" | grep -q "shut off" || virsh destroy "$1"
+  snap=$(virsh snapshot-list "$1" --tree --current | head -n 1)
+  if [ $? -ne 0 ]; then
+    echo >&2 "The $1 machine dosn't have any snaphost yet."
+    return 1
+  fi
+
+  virsh snapshot-delete    "$1" "$snap"
+  sleep 2
+  virsh snapshot-create-as "$1" "$snap"
+  [ "$2" == "-s" ] && virsh start "$1"
+}
+
+virt_snap_reload() {
+  #
+  # Revert the $1 virtual machine to the current snapshot.
+  # When the "-s" is used as $2 parameter, the machine will be automatically
+  # started.
+  #
+  virt_check "$1" || return 1
+  virsh domstate "$1" | grep -q "shut off" || virsh destroy "$1"
+  virsh snapshot-revert "$1" --current
+  [ "$2" == "-s" ] && virsh start "$1"
+}
+
+virt_reboot() {
+  virt_check "$1" || return 1
+  virsh domstate "$1" | grep -q "shut off" && {
+    echo >&2 "The $1 machine is stopped."
+    return 0
+  }
+
+  virsh destroy "$1"; sleep 1
+  virsh start   "$1"
+}
+
+
+##############################################################################
+# USEFUL ALIASES (commented out by default)
+##############################################################################
+# alias vlist="virsh list"
+# alias vlista="virsh list --all"
+
+#############################################
