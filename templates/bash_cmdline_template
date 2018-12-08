@@ -1,0 +1,35 @@
+#!/bin/bash
+
+# This is template for primitive processing of cmdline parameters.
+# I found this useful for my small utilities.
+
+while [ -n "$1" ]; do
+  param="$(echo "$1" | sed -r "s/^(.*)=.*/\1/")"
+
+  # this is hack for case an argument is expected for the parameter
+  if [[ "$param" != "$1"  ]]; then
+     # --param=value
+     _VAL=$(echo "$1" | sed -r "s/^.*=(.*)/\1/g");
+     _USED_NEXT=0
+  else
+     # --param value
+     # Note: in case the value is not expected, 
+     _VAL="$2"
+     _USED_NEXT=1
+  fi
+
+  case "$param" in
+
+    # option) #...
+    # in case the value is expected, use something like:
+    #    MY_VAR=$_VAL
+    #    shift $_USED_NEXT
+
+    # deathtrap
+    *)
+      echo >&2 "Unkown option '$param'"
+      exit 1
+      ;;
+  esac
+  shift
+done
