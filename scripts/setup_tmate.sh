@@ -17,6 +17,13 @@ rpm -q podman --quiet
   }
 }
 
+podman images tmate/tmate-ssh-server | grep -q "tmate/tmate-ssh-server" || {
+    log_info "The tmate-ssh-server image is missing. Pulling.."
+    podman pull tmate/tmate-ssh-server || {
+      log_error "Cannot pull the tmate/tmate-ssh-server image."
+      exit 1
+    }
+}
 
 [ ! -d "$TMATE_KEYS" ] && {
   log_info "ssh keys for tmate server are not generated."
@@ -66,4 +73,6 @@ podman ps -p | grep -q "tmate_server" || {
 }
 
 log_info "The server is running. To stop the server run: podman stop tmate_server"
+
+log_info "Do not forget to set the ~/.tmate.conf  :)"
 exit 0
