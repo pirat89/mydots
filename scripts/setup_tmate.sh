@@ -54,7 +54,7 @@ sudo firewall-cmd --zone=public --add-port=2200/tcp || {
 
 log_info "starting the container with tmate server as: tmate_server"
 
-podman run --rm --privileged --cap-add=SYS_ADMIN --name tmate_server \
+podman run --rm --cap-add=SYS_ADMIN --name tmate_server \
            -e PORT=$PORT -e SSH_PORT_LISTEN=$PORT -p $PORT:$PORT \
            -e SSH_HOSTNAME=$(hostname) --volume "$TMATE_KEYS":/root/keys:Z \
            -e SSH_KEYS_PATH=/root/keys -t tmate-ssh-server /bin/bash &
