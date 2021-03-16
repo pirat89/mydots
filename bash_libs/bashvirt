@@ -26,6 +26,19 @@ virt_check() {
   return 1
 }
 
+_virt_external_snap_check() {
+  #
+  # Check whether the external snapshots are present for particular domain.
+  #
+  virt_check "$1" || return 1
+  [ "$(virsh snapshot-list "$1" --external | wc -l)" -eq 3 ] || {
+    echo >&2 "Error: external snapshots detected. Cannot use functions for"
+    echo >&2 "       snapshots. You have to handle it manually."
+    return 1
+  }
+  return 0
+}
+
 virt_get_mac() {
   # Print MAC addr of virtual machine with domain name $1
   virt_check "$1" || return 1
@@ -178,6 +191,7 @@ virt_snap() {
   fi
 
   virt_check "$1" || return 1
+  _virt_external_snap_check "$1" || return 1
   virsh snapshot-list "$1" | grep -q "[[:space:]]$2[[:space:]]"
   if [ $? -eq 0 ]; then
     echo >&2 "Error: snapshot already exists."
@@ -198,6 +212,7 @@ virt_snap_update() {
     return 1
   fi
   virt_check "$1" || return 1
+  _virt_external_snap_check "$1" || return 1
 
   local snap
 
@@ -222,6 +237,7 @@ virt_snap_reload() {
   # started.
   #
   virt_check "$1" || return 1
+  _virt_external_snap_check "$1" || return 1
   virsh domstate "$1" | grep -q "shut off" || virsh destroy "$1"
   virsh snapshot-revert "$1" --current
   [ "$2" == "-s" ] && virsh start "$1"
