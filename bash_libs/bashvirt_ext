@@ -1,0 +1,493 @@
+#!/usr/bin/bash
+
+# The library is just extension of the original bashvirt library supporting
+# some ways how to work with external snapshots
+# This library has own limitations like:
+#  - you can reload just to the last "static" snapshot (see below)
+#  - you can remove just the leaf snapshot
+#  - special naming convention is used
+#  - internal and external snapshots cannot be combined under one VM
+#  - ... and the whole thing is pretty experimental
+#
+# The idea of the work with external snapshots in this library is like this (simplified):
+#   you have FOO VM without any snapshot
+#   $ virt_snap_ext FOO mysnap
+#   - xml with the current VM setup is backed up
+#   - created external snapshots:
+#            mysnap
+#            mysnap.active
+#   $ virt_snap_ext_reload FOO
+#   - restore the mysnap snapshot
+#   - remove the mysnap.active snapshot
+#   - recreate the mysnap.active snapshot
+# Limitations:
+#   - currently just VMs with just one disk can be managed
+#   - cannot manage now switching between multiple snapshots, IOW, cannot create
+#     tree like:
+#       - snap1
+#          + snap2
+#            + snap3
+#          + snap4
+#        ....
+#     just:
+#       - snap1
+#         + snap2
+#           + snap3
+#       ....
+#     When you want to go to snap1, you need to remove snap3, then remove snap2,
+#     and than you can use the snap1 again. It's possible to fix it, but the
+#     functionality is not implemented in this library yet.
+#  - regarding the problem described above, it's not possible now to update
+#    the current snapshot; you have to create just a new one instead
+# TODO:
+#  - get rid of .active snapshots - they are not so needed in the current use case
+
+#
+# Absolute path to a dir where the script can backup the XML of particular domains
+#
+# The directory must exist with proper permissions (e.g. 0775). In case of switching
+# to another machine, ensure you create a back up of the directory too, otherwise
+# you will not be able to use functions for managing the external snapshots.
+#
+_LIBVIRT_XML_BACKUP_DIR="__SET_YOUR_PATH__"
+
+#
+# Set 1 if you do not want to be prompted for every "rm -rf" removal
+#
+# It's here more for your safety, in case I did any mistake in the code.
+# I expect you will try the behaviour several times and will be happy to
+# switch it to 1.
+#
+_DO_NOT_PROMPT_REMOVAL=0
+
+#
+# This is default value for pool. But it can be renamed by user. In such a case
+# change the value to your default.
+#
+_LIBVIRT_POOL_DEFAULT="default"
+
+#
+# Do not touch! Change of this constant can negatively affect the library
+# and virsh / libvirt too unfortunately (paid by many hours of debugging....)
+#
+# _LIBVIR_ACTIVE_SUFFIX=""
+
+virt_check() {
+  #
+  # Check whether virtual machine with domain name $1 exists.
+  #
+  # Return 0 when exists
+  #        1 otherwise + print msg on stderr
+  # Copred from the bashvirt library
+  #
+  [ -z "$1" ] && {
+    echo >&2 "Error: Missing domain name."
+    return 1
+  }
+
+  virsh list --all --name | grep -q "$1" && return 0
+
+  echo >&2 "Error: The '$1' domain name does not exist."
+  return 1
+}
+
+
+_is_abs_path() {
+  case "$1" in (/*) return 0;; (*) return 1;; esac
+}
+
+
+_virt_check_initialized_vars() {
+  #
+  # Check that expected variables are set properly
+  #
+  [ "$_LIBVIRT_XML_BACKUP_DIR" == "__SET_YOUR_PATH__" ] && {
+    echo >&2 'Error: The $_LIBVIRT_XML_BACKUP_DIR variable has not been manually'
+    echo >&2 '       updated in the library. Please update it according to instructions'
+    echo >&2 '       in comments.'
+    return 1
+  }
+
+  _is_abs_path "$_LIBVIRT_XML_BACKUP_DIR" || {
+    echo >&2 'Error: The path in $_LIBVIRT_XML_BACKUP_DIR has to be absolute.'
+    return 1
+  }
+
+  [ -d "$_LIBVIRT_XML_BACKUP_DIR" ] || {
+      echo >&2 "Error: '$_LIBVIRT_XML_BACKUP_DIR' does not exist or it's not directory."
+      return 1
+  }
+
+  return 0
+}
+
+
+_virt_check_int_snaps() {
+  #
+  # In case that any internal snapshot is present, return 1 and print error.
+  #
+  virt_check "$1" || return 1
+  local ext_snap="$(virsh snapshot-list "$1" --internal --name | wc -l)"
+  [ "$ext_snap" -eq "1" ] && return 0
+
+  # some internal snapshots are present
+  echo >&2 "Error: Some internal snaphots have been detected. Cannot perform"
+  echo >&2 "       any action with external snapshots."
+  return 1
+}
+
+_virt_create_ext_snap() {
+  # Do not call this function directly without all needed checks!
+  [ $# -ne 2 ] && {
+     echo >&2 "Error: missing vars for _virt_create_ext_snap function [$#]: $@"
+     return 1
+  }
+  snap_file_name="$(_get_pool_dir)/${1}.${2}"
+  virsh snapshot-create-as --disk-only --atomic \
+    --domain "$1" "${2}" \
+    --diskspec vda,snapshot=external,file="$snap_file_name"
+}
+
+
+_get_pool_dir() {
+  virsh pool-dumpxml "$_LIBVIRT_POOL_DEFAULT" | grep -Po "(?<=path\>)[^<]+"
+}
+
+_virt_pool_refresh() {
+  virsh pool-refresh --pool "$_LIBVIRT_POOL_DEFAULT"
+}
+
+
+_create_snap_dir() {
+  [ $# -ne 2 ] && return 1
+  snap_dir="$_LIBVIRT_XML_BACKUP_DIR/$1/$2"
+  mkdir -p "$snap_dir"
+  [ -d "$snap_dir" ] || return 1
+  echo "$snap_dir"
+  return 0
+}
+
+
+_get_snap_dir() {
+  [ $# -ne 2 ] && return 1
+  snap_dir="$_LIBVIRT_XML_BACKUP_DIR/$1/$2"
+  [ -d "$snap_dir" ] || return 1
+  echo "$snap_dir"
+  return 0
+}
+
+_get_current_snap() {
+  [ $# -ne 1 ] && return 1
+  curr_snap_file="$_LIBVIRT_XML_BACKUP_DIR/$1/current_snap"
+  [ -f "$curr_snap_file" ] || return 0
+  cat "$curr_snap_file"
+}
+
+_set_current_snap() {
+  [ $# -ne 2 ] && return 1
+  echo "$2" > "$_LIBVIRT_XML_BACKUP_DIR/$1/current_snap"
+}
+
+_safe_rmrf() {
+  local r_val=0
+  while [ -n "$1" ]; do
+    [ -e "$1" ] || { shift; continue; }
+    [ "$1" == "${1#$_LIBVIRT_XML_BACKUP_DIR}" ] && {
+      # path is out of the $_LIBVIRT_XML_BACKUP_DIR directory which is unsafe
+      echo >&2 "WARNING: the '$1' path is out of the specified _LIBVIRT_XML_BACKUP_DIR [skipping removal]"
+      r_val=1
+      shift
+      continue
+    }
+    echo >&2 "Info: Plan removal: '$1'"
+    [ "$_DO_NOT_PROMPT_REMOVAL" -eq 1 ] && rm -rf "$1"
+    read -p "Is the removal of '$1' OK? [y/n] " -n 1 -r
+    echo
+    [[ $REPLY =~ ^[Yy]$ ]] && rm -rf "$1" || {
+      echo >&2 "WARNING: The removal has been skipped".
+      r_val=1
+    }
+    shift
+  done
+
+  return $r_val
+}
+
+
+virt_check_ext() {
+  _virt_check_initialized_vars && _virt_check_int_snaps "$1" || return 1
+  local _n_disks=$(virsh dumpxml "$1"  | grep disk | grep "device='disk'" | wc -l)
+  [ "$_n_disks" -ne "1" ] && {
+    echo >&2 "Error: The $1 VM uses more than 1 disk (or no disk has been detected)."
+    echo >&2 "       The current implementation of functions managing external snapshots"
+    echo >&2 "       require existence of only one disk device per VM."
+    return 1
+  }
+  return 0
+}
+
+
+virt_snap_ext() {
+  #
+  # Analogy to virt_snap() for external snapshots (creates always 2 snapshots)
+  #
+  # As managing of external snapshots it's different create always 2 snapshots:
+  #    static one: $2
+  #    active one: ${2}.active
+  # In this way we can be sure the snapshot we create is safe and we can restore
+  # it. The *.active snapshot will be used to contain all changes from the
+  # static one.
+  #
+  # This way is not ideal, but it provides at least some reliability when working
+  # with external snapshots.
+  #
+  # Limits:
+  #   - The function does snapshot only for VMs in shut down state - only disk
+  #     is saved.
+  #   - Only one disk is supported for the snapshot! The support of multiple
+  #     disks is not handled by this library. You have to manage such snapshots
+  #     manually :(
+  #
+  virt_check_ext "$1" || return 1
+  local _active_snap="${2}.active"
+  if [ $# -ne 2 ]; then
+    echo -e >&2 "USAGE:\n    virt_snap_ext <VIRT_NAME> <SNAPSHOT_NAME>\n"
+    return 1
+  fi
+
+  echo "$2" | grep -qi "^[a-z0-9][a-z0-9_.-]*$" || {
+    echo >&2 "Error: The snapshot name contains invalid characters."
+    echo >&2 "       Valid: [a-zA-Z0-9_.-]"
+    echo >&2 "       And must start with alphanum character."
+    return 1
+  }
+
+  virsh snapshot-list "$1" --external --name | grep -qE "^(${2}|$_active_snap)$" && {
+    echo >&2 "Error: The $2 or $_active_snap snapshot already exists."
+    return 1
+  }
+
+  snap_dir=$(_create_snap_dir "$1" "$2")
+  snap_dir_active=$(_create_snap_dir "$1" "$_active_snap")
+  [ $? -eq 0 ] && [ -n "$snap_dir" ] && [ -n "$snap_dir_active" ] || {
+    echo >&2 "Error: cannot get the expected directories for the snapshot metadata"
+    return 1
+  }
+
+  virsh domstate "$1" | grep -q "shut off" || virsh destroy "$1"
+  sleep 1
+
+  # check if any snapshot already exists. if not, create the default xml file
+  # with the information about the default machine state before the first
+  # snapshot is created (kind of it's like we have snapshot of the original state)
+  local curr_snap="$(_get_current_snap "$1")"
+  [ -z "$curr_snap" ] && {
+    virsh dumpxml "$1" > "$_LIBVIRT_XML_BACKUP_DIR/$1/domain.xml"
+  }
+
+
+  # store some metadata for future actions
+  echo "$curr_snap" > "$snap_dir/parent"
+  virsh dumpxml "$1" > "$snap_dir/domain.xml"
+  _virt_create_ext_snap "$1" "$2" || {
+    echo >&2 "Error: cannot create the external snapshot"
+    _safe_rmrf "$snap_dir" "$snap_dir_active"
+    return 1
+  }
+  _set_current_snap "$1" "$2"
+  sleep 1
+
+  echo "$2" > "$snap_dir_active/parent"
+  virsh dumpxml "$1" > "$snap_dir_active/domain.xml"
+
+  _virt_create_ext_snap "$1" "$_active_snap" || {
+    # TODO: check the result of the action and revert the previous snapshot when fails
+    # TODO: implement own logic to manage the topology of external snapshots
+    # TODO: currently the $snap_dir is not removed, it should be removed too..
+    _safe_rmrf "$snap_dir_active" # "$snap_dir"
+    return 1
+  }
+  _set_current_snap "$1" "$_active_snap"
+  _virt_pool_refresh
+
+  return 0
+}
+
+
+virt_snap_ext_reload() {
+  #
+  # Analogy to virt_snap_reload, just working with external snapshots
+  #
+  # Reload the last snapshot
+  #
+  virt_check_ext "$1" || return 1
+  if [ $# -ne 1 ]; then
+    echo -e >&2 "USAGE:\n    virt_snap_ext <VIRT_NAME>\n"
+    return 1
+  fi
+
+  local curr_snap="$(_get_current_snap "$1")"
+  local static_snap="${curr_snap%.active}"
+  [ -z "$curr_snap" ] && return 1
+  [ "$curr_snap" == "$static_snap" ] && {
+    echo >&2 "Error: The current $curr_snap snapshot doesn't contain the .active suffix."
+    echo >&2 "       For the reload the .active suffix is required by this library."
+    echo >&2 "       Probably the snapshot is not managed (has not been created) by"
+    echo >&2 "       this liberary?"
+    return 1
+  }
+
+  local curr_snap_dir="$(_get_snap_dir "$1" "$curr_snap")"
+  local static_snap_dir="$(_get_snap_dir "$1" "$static_snap")"
+  [ -n "$curr_snap_dir" ] && [ -n "$static_snap_dir" ] || {
+    echo >&2 "Error: Inconsistent directory structure under $_LIBVIRT_XML_BACKUP_DIR"
+    echo >&2 "       Some directories for expected snapshots doesn't exist."
+    echo >&2 "       Maybe some snapshots have been created without this library?"
+    return 1
+  }
+
+  local dom_blk_device="$(_get_pool_dir)/${1}.${curr_snap}"
+  [ -f "$dom_blk_device" ] || {
+    echo >&2 "Error: Cannot detect the expected current qcow img."
+    return 1
+  }
+
+  virsh domstate "$1" | grep -q "shut off" || virsh destroy "$1"
+  sleep 0.5
+
+  # first switch back to the static snapshot (change the XML file to point to the
+  # expected qcow disk
+  virsh define "$static_snap_dir/domain.xml" --validate || {
+    echo >&2 "Error: something wrong happend. Cannot restore the snapshot."
+    return 1
+  }
+  _set_current_snap "$1" "$static_snap"
+  sleep 1
+
+  _virt_pool_refresh
+  virsh vol-delete --pool "$_LIBVIRT_POOL_DEFAULT" "$1.$curr_snap" || {
+    echo >&2 "Error: cannot delete the '$1.$curr_snap' volume."
+    echo >&2 "       The VM is in inconsistent state as the original snapshot"
+    echo >&2 "       has been reloaded but $1.$curr_snap has not been removed and"
+    echo >&2 "       recreated yet. If you run the machine without manual fix"
+    echo >&2 "       the current snapshot will be lost and you will not be able."
+    echo >&2 "       to manage external snapshots for this VM using this library."
+    return 1
+  }
+
+  # remove metadata about the active snapshot
+  virsh snapshot-delete --metadata "$1" "$curr_snap" || {
+      echo >&2 "Error: cannot remove the metadata about the $curr_snap snapshot."
+      return 1
+  }
+  sleep 1
+
+
+  _virt_create_ext_snap "$1" "$curr_snap" || {
+    echo >&2 "Error: Cannot recreate the $curr_snap snapshot."
+    return 1
+  }
+  _set_current_snap "$1" "$curr_snap"
+
+}
+
+
+virt_snap_ext_update() {
+  #
+  # Analogy to virt_snap_update
+  #
+  # virt_check_ext "$1" || return 1
+  echo >&2 "Error: not implemented yet"
+  return 1
+}
+
+
+virt_snap_ext_delete() {
+  #
+  # Delete an external snapshot if possible
+  #
+  # It seems it's not wise to delete a specific external snapshot if it is not
+  # leaf. Remove the particular snaphost only if it's leaf (the possible .active
+  # snapshot can exists; in such a case, remove the active first and then the leaf)
+  #
+  # virt_check_ext "$1" || return 1
+  echo >&2 "Error: not implemented yet"
+  return 1
+}
+
+virt_snap_ext_delete_last() {
+  #
+  # Delete the last existing active and static snapshot for the VM.
+  #
+  virt_check_ext "$1" || return 1
+  if [ $# -ne 1 ]; then
+    echo -e >&2 "USAGE:\n    virt_snap_ext <VIRT_NAME>\n"
+    return 1
+  fi
+
+  local curr_snap="$(_get_current_snap "$1")"
+  local static_snap="${curr_snap%.active}"
+  [ -z "$curr_snap" ] && return 1
+  [ "$curr_snap" == "$static_snap" ] && {
+    echo >&2 "Error: The current $curr_snap snapshot doesn't contain the .active suffix."
+    echo >&2 "       For the reload the .active suffix is required by this library."
+    echo >&2 "       Probably the snapshot is not managed (has not been created) by"
+    echo >&2 "       this liberary?"
+    return 1
+  }
+
+  local curr_snap_dir=$(_get_snap_dir "$1" "$curr_snap")
+  [ -n "$curr_snap_dir" ] || {
+    echo >&2 "Error: $curr_snap_dir doesn't exist."
+    return 1
+  }
+
+  local static_snap_dir=$(_get_snap_dir "$1" "$static_snap")
+  [ -n "$static_snap_dir" ] && [ -f "$static_snap_dir/parent" ] || {
+    echo >&2 "Error: $static_snap_dir/parent doesn't exist."
+    return 1
+  }
+
+  local parent=$(cat "$static_snap_dir/parent")
+  local parent_domain_xml
+  if [ -z "$parent" ]; then
+    parent_domain_xml="$_LIBVIRT_XML_BACKUP_DIR/$1/domain.xml"
+  else
+    parent_domain_xml="$static_snap_dir/domain.xml"
+  fi
+  [ -f "$parent_domain_xml" ] || {
+    echo >&2 "Error: The backup of the domain xml file for the parent snapshot / original VM"
+    echo >&2 "       doesn't exist. Cannot restore original state / cannot remove the current snapshot"
+    return 1
+  }
+
+  virsh define "$parent_domain_xml" --validate || {
+    echo >&2 "Error: something wrong happend. Cannot restore the snapshot."
+    return 1
+  }
+  _set_current_snap "$1" "$parent"  # empty parent is ok - means no snapshot..
+
+  _virt_pool_refresh
+  virsh vol-delete --pool "$_LIBVIRT_POOL_DEFAULT" "$1.$curr_snap" || {
+    echo >&2 "Error: cannot remove the qcow image for the $1.$curr_snap snapshot."
+    return 1
+  }
+  virsh snapshot-delete --metadata "$1" "$curr_snap" || {
+      echo >&2 "Error: cannot remove the metadata about the $curr_snap snapshot."
+      return 1
+  }
+  _safe_rmrf "$curr_snap_dir"
+
+  virsh vol-delete --pool "$_LIBVIRT_POOL_DEFAULT" "$1.$static_snap" || {
+    echo >&2 "Error: cannot remove the qcow image for the $1.$static_snap snapshot."
+    return 1
+  }
+  virsh snapshot-delete --metadata "$1" "$static_snap" || {
+      echo >&2 "Error: cannot remove the metadata about the $static_snap snapshot."
+      return 1
+  }
+  _safe_rmrf "$static_snap_dir"
+  _virt_pool_refresh
+
+  return 0
+}
