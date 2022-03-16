@@ -335,6 +335,25 @@
         <monitor>1</monitor>
       </action>
     </keybind>
+    <keybind key="W-Left">
+      <action name="Unmaximize" />
+      <action name="MoveResizeTo">
+        <x>0</x>
+        <y>0</y>
+        <width>50%</width>
+        <height>100%</height>
+      </action>
+    </keybind>
+    <keybind key="W-Right">
+      <action name="Unmaximize" />
+      <action name="MoveResizeTo">
+        <x>-0</x>
+        <y>0</y>
+        <width>50%</width>
+        <height>100%</height>
+      </action>
+    </keybind>
+
 
     <!-- Keybindings for running applications -->
     <keybind key="A-F2">
@@ -411,6 +430,12 @@
       <action name="Execute">
         <command>toggle_sound</command>
       </action>
+    </keybind>
+    <keybind key="W-t">
+      <action name="ToggleAlwaysOnTop"/>
+    </keybind>
+    <keybind key="W-S-d">
+      <action name="ToggleDecorations"/>
     </keybind>
   </keyboard>
   <mouse>
