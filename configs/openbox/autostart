@@ -1,0 +1,7 @@
+dual_disp.sh
+tint2 &
+sleep 0.5
+~/.config/openbox/wallpaper.sh
+setlayout 0 3 2 0
+
+setxkbmap -layout "cz,us" -option "grp:ctrls_toggle"
