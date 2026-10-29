@@ -85,7 +85,7 @@ virt_check() {
     return 1
   }
 
-  virsh list --all --name | grep -q "$1" && return 0
+  virsh list --all --name | grep -qe "$1" && return 0
 
   echo >&2 "Error: The '$1' domain name does not exist."
   return 1
@@ -320,11 +320,13 @@ virt_snap_ext_reload() {
   #
   # Reload the last snapshot
   #
-  virt_check_ext "$1" || return 1
-  if [ $# -ne 1 ]; then
-    echo -e >&2 "USAGE:\n    virt_snap_ext <VIRT_NAME>\n"
+  if [ $# -ge 3 ] || [ $# -eq 0 ] || [ "$2" != "-s" ]; then
+    echo -e "$# $2 $1"
+    echo -e >&2 "USAGE:\n    virt_snap_ext <VIRT_NAME> [-s]"
+    echo -e >&2 "        -s start the machine automatically after the reload"
     return 1
   fi
+  virt_check_ext "$1" || return 1
 
   local curr_snap="$(_get_current_snap "$1")"
   local static_snap="${curr_snap%.active}"
@@ -389,6 +391,7 @@ virt_snap_ext_reload() {
   }
   _set_current_snap "$1" "$curr_snap"
 
+  [ "$2" == "-s" ] && sleep 1 && virsh start "$1"
 }
 
 

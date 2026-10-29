@@ -4,7 +4,6 @@
 # FUNCTIONS FOR VIRTUAL MACHINES
 ##############################################################################
 
-# TODO: install VM function
 # virt-install --name rhel7 --ram 1024 --disk ~/vmdisk/rhel7,size=10 \
 #   --location http://download-ipv4.eng.brq.redhat.com/released/RHEL-7/7.4/Server/x86_64/os/ \
 #   --nographics --os-variant=rhel7 --extra-args \"console=ttyS0\"
@@ -24,6 +23,13 @@ virt_check() {
 
   echo >&2 "Error: The '$1' domain name does not exist."
   return 1
+}
+
+_virt_is_session() {
+  #
+  # Rerun 0 if virt uri is qemu:///session
+  #
+  virsh uri | grep -q "qemu:///session"
 }
 
 _virt_external_snap_check() {
@@ -52,7 +58,10 @@ virt_get_ip() {
   # Print IP addr of virtual machine with domain name $1
   #
   virt_check "$1" || return 1
-  virsh domifaddr "$1" | tail -n +3 \
+  local virsh_opts=""
+  _virt_is_session && virsh_opts="--source arp"
+
+  virsh domifaddr "$1" $virsh_opts | tail -n +3 \
     | rev | cut -d " " -f 1 | rev \
     | head -n1 | grep -Eo "^[^/]+"
 }
@@ -70,10 +79,12 @@ virt_ssh() {
   }
 
   local active=0
+  echo >&2 "Info: ssh root@$v_ip"
   echo -n >&2 "Try to connect: "
   for i in {0..20}; do
     # test whether machine is already accessible
-    ssh -A "root@$v_ip" 'echo Ahoj' >/dev/null 2>&1 && { active=1; break; }
+    ssh -A "root@$v_ip" 'echo Ahoj' >/tmp/.bashvirt_ssh.logs 2>&1 && { active=1; break; }
+    grep -q "Host key verification failed." "/tmp/.bashvirt_ssh.logs" && { cat /tmp/.bashvirt_ssh.logs; break; }
     echo -n >&2 "."
     sleep 2
   done
@@ -254,11 +265,5 @@ virt_reboot() {
   virsh start   "$1"
 }
 
-
-##############################################################################
-# USEFUL ALIASES (commented out by default)
-##############################################################################
-# alias vlist="virsh list"
-# alias vlista="virsh list --all"
-
 #############################################
+
