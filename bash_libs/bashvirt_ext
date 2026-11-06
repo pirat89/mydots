@@ -61,10 +61,12 @@ _LIBVIRT_XML_BACKUP_DIR="__SET_YOUR_PATH__"
 _DO_NOT_PROMPT_REMOVAL=0
 
 #
-# This is default value for pool. But it can be renamed by user. In such a case
-# change the value to your default.
+# This is the pool used for snapshots. Usually it's default pool, but it can
+# be renamed by user - or a different pool can be used at all for snapshots.
+# In such a case change the value to the pool you want. Note the pool must
+# exist and must be running.
 #
-_LIBVIRT_POOL_DEFAULT="default"
+_LIBVIRT_POOL_SNAP="default"
 
 #
 # Do not touch! Change of this constant can negatively affect the library
@@ -150,11 +152,11 @@ _virt_create_ext_snap() {
 
 
 _get_pool_dir() {
-  virsh pool-dumpxml "$_LIBVIRT_POOL_DEFAULT" | grep -Po "(?<=path\>)[^<]+"
+  virsh pool-dumpxml "$_LIBVIRT_POOL_SNAP" | grep -Po "(?<=path\>)[^<]+"
 }
 
 _virt_pool_refresh() {
-  virsh pool-refresh --pool "$_LIBVIRT_POOL_DEFAULT"
+  virsh pool-refresh --pool "$_LIBVIRT_POOL_SNAP"
 }
 
 
@@ -367,7 +369,7 @@ virt_snap_ext_reload() {
   sleep 1
 
   _virt_pool_refresh
-  virsh vol-delete --pool "$_LIBVIRT_POOL_DEFAULT" "$1.$curr_snap" || {
+  virsh vol-delete --pool "$_LIBVIRT_POOL_SNAP" "$1.$curr_snap" || {
     echo >&2 "Error: cannot delete the '$1.$curr_snap' volume."
     echo >&2 "       The VM is in inconsistent state as the original snapshot"
     echo >&2 "       has been reloaded but $1.$curr_snap has not been removed and"
@@ -471,7 +473,7 @@ virt_snap_ext_delete_last() {
   _set_current_snap "$1" "$parent"  # empty parent is ok - means no snapshot..
 
   _virt_pool_refresh
-  virsh vol-delete --pool "$_LIBVIRT_POOL_DEFAULT" "$1.$curr_snap" || {
+  virsh vol-delete --pool "$_LIBVIRT_POOL_SNAP" "$1.$curr_snap" || {
     echo >&2 "Error: cannot remove the qcow image for the $1.$curr_snap snapshot."
     return 1
   }
@@ -481,7 +483,7 @@ virt_snap_ext_delete_last() {
   }
   _safe_rmrf "$curr_snap_dir"
 
-  virsh vol-delete --pool "$_LIBVIRT_POOL_DEFAULT" "$1.$static_snap" || {
+  virsh vol-delete --pool "$_LIBVIRT_POOL_SNAP" "$1.$static_snap" || {
     echo >&2 "Error: cannot remove the qcow image for the $1.$static_snap snapshot."
     return 1
   }
